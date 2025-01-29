@@ -350,15 +350,10 @@ where
         let builder_client = self.builder_client.client.clone();
         let url = self.builder_client.url.clone();
         tokio::spawn(async move {
-            info!(target: "server::set_max_da_size", message = "forwarding request to builder");
-
             builder_client.set_max_da_size(max_tx_size, max_block_size).await.map_err(|e| {
                 error!(target: "server::set_max_da_size", message = "error calling miner_setMaxDASize for builder", "url" =url, "error" = %e);
             })
         });
-
-        // TODO: temp logging for debugging
-        info!(target: "server::set_max_da_size", message = "forwarding request to l2 client");
 
         match self
             .l2_client
@@ -984,45 +979,5 @@ mod tests {
             })
             .unwrap();
         server.start(module)
-    }
-
-    // TODO: update test harness
-    #[tokio::test]
-    async fn test_set_max_da_size() -> eyre::Result<()> {
-        let l2_client = HttpClientBuilder::new()
-            .build(format!("http://{L2_ADDR}"))
-            .unwrap();
-        let builder_client = HttpClientBuilder::new()
-            .build(format!("http://{BUILDER_ADDR}"))
-            .unwrap();
-
-        let rollup_boost_server = RollupBoostServer::new(
-            Arc::new(HttpClientWrapper::new(
-                l2_client,
-                format!("http://{L2_ADDR}"),
-            )),
-            Arc::new(HttpClientWrapper::new(
-                builder_client,
-                format!("http://{BUILDER_ADDR}"),
-            )),
-            false,
-            None,
-        );
-
-        let module: RpcModule<()> = rollup_boost_server.try_into()?;
-
-        let _proxy = ServerBuilder::default()
-            .build(SERVER_ADDR.parse::<SocketAddr>()?)
-            .await?
-            .start(module);
-
-        let client = HttpClient::builder()
-            .build(format!("http://{SERVER_ADDR}"))
-            .unwrap();
-
-        let service_builder = tower::ServiceBuilder::new()
-            .layer(ProxyLayer::new(Uri::try_from(format!("http://{L2_ADDR}"))?));
-
-        Ok(())
     }
 }
