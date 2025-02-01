@@ -162,9 +162,32 @@ where
 
         for method in FORWARD_REQUESTS.iter() {
             module.register_async_method(method, |params, ctx, ext| async move {
-                // TODO: forward to the builder and client
+                tokio::spawn(async move {
+                    builder_client
+                        .client
+                        .request(method, params)
+                        .await
+                        .map_err(|e| {
 
-                RpcResult::Ok(serde_json::json!({}))
+                            // TODO: error
+                        })
+                });
+
+                self.l2_client
+                    .client
+                    .request(method, params)
+                    .await
+                    .map_err(|e| match e {
+                        ClientError::Call(err) => err, // Already an ErrorObjectOwned, so just return it
+                        other_error => {
+                            error!(
+                                message = "error calling send_raw_transaction for l2 client",
+                                "url" = ?self.l2_client.http_socket,
+                                "error" = %other_error,
+                            );
+                            ErrorCode::InternalError.into()
+                        }
+                    })
             })?;
         }
 
