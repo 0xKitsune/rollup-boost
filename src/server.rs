@@ -27,6 +27,15 @@ use jsonrpsee::proc_macros::rpc;
 
 const CACHE_SIZE: usize = 100;
 
+const FORWARD_REQUESTS: [&str; 6] = [
+    "eth_sendRawTransaction",
+    "eth_sendRawTransactionConditional",
+    "miner_setExtra",
+    "miner_setGasPrice",
+    "miner_setGasLimit",
+    "miner_setMaxDASize",
+];
+
 pub struct PayloadTraceContext {
     tracer: Arc<BoxedTracer>,
     block_hash_to_payload_ids: Arc<Mutex<LruCache<B256, Vec<PayloadId>>>>,
@@ -146,7 +155,18 @@ where
         module.merge(EngineApiServer::into_rpc(self.clone()))?;
         module.merge(EthApiServer::into_rpc(self.clone()))?;
         module.merge(MinerApiServer::into_rpc(self.clone()))?;
-        module.merge(MinerApiExtServer::into_rpc(self))?;
+        module.merge(MinerApiExtServer::into_rpc(self.clone()))?;
+
+        let builder_client = self.builder_client.clone();
+        let l2_client = self.l2_client.clone();
+
+        for method in FORWARD_REQUESTS.iter() {
+            module.register_async_method(method, |params, ctx, ext| async move {
+                // TODO: forward to the builder and client
+
+                RpcResult::Ok(serde_json::json!({}))
+            })?;
+        }
 
         for method in module.method_names() {
             info!(?method, "method registered");
