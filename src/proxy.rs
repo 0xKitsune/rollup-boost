@@ -12,7 +12,14 @@ use tower::{Layer, Service};
 use tracing::{debug, error, info};
 
 const MULTIPLEX_METHODS: [&str; 3] = ["engine_", "eth_sendRawTransaction", "miner_"];
-const FORWARD_REQUEST: [&str; 3] = ["engine_", "eth_sendRawTransaction", "miner_"];
+const FORWARD_REQUESTS: [&str; 6] = [
+    "eth_sendRawTransaction",
+    "eth_sendRawTransactionConditional",
+    "miner_setExtra",
+    "miner_setGasPrice",
+    "miner_setGasLimit",
+    "miner_setMaxDASize",
+];
 
 #[derive(Debug, Clone)]
 pub struct ProxyLayer {
@@ -99,7 +106,7 @@ where
             debug!(message = "received json rpc request for", ?method);
 
             if MULTIPLEX_METHODS.iter().any(|&m| method.starts_with(m)) {
-                if FORWARD_REQUEST.iter().any(|&m| method.starts_with(m)) {
+                if FORWARD_REQUESTS.iter().any(|&m| method.starts_with(m)) {
                     let builder_client = client.clone();
                     let builder_req =
                         HttpRequest::from_parts(parts.clone(), HttpBody::from(body_bytes.clone()));
