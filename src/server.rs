@@ -157,7 +157,7 @@ where
         // Register all the methods that should be forwarded to the builder and l2 client
         for method in FORWARD_REQUESTS.iter() {
             module.register_async_method(method, move |params, ctx, _ext| async move {
-                let builder_params: (serde_json::Value,) =
+                let builder_params: Vec<serde_json::Value> =
                     params.parse().map_err(|_| ErrorCode::ParseError)?;
                 let l2_params = builder_params.clone();
 
