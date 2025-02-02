@@ -55,7 +55,7 @@ impl<S> Layer<S> for ProxyLayer {
             l2_uri: self.l2_uri.clone(),
             l2_auth: self.l2_auth,
             builder_uri: self.builder_uri.clone(),
-            builder_auth: self.builder_auth.clone(),
+            builder_auth: self.builder_auth,
         }
     }
 }
@@ -94,7 +94,7 @@ where
         let client = self.client.clone();
         let mut inner = self.inner.clone();
         let builder_uri = self.builder_uri.clone();
-        let builder_auth = self.builder_auth.clone();
+        let builder_auth = self.builder_auth;
         let l2_uri = self.l2_uri.clone();
         let l2_auth = self.l2_auth;
 
@@ -171,11 +171,7 @@ async fn forward_request(
     );
 
     match client.request(req).await {
-        Ok(resp) => {
-            let resp = resp.map(HttpBody::new);
-
-            Ok(resp)
-        }
+        Ok(resp) => Ok(resp.map(HttpBody::new)),
         Err(e) => {
             error!(
                 target: "proxy::call",

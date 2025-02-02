@@ -1,6 +1,6 @@
 use crate::client::ExecutionClient;
 use crate::metrics::ServerMetrics;
-use alloy_primitives::{Bytes, B256, U128, U64};
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ExecutionPayload, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId,
     PayloadStatus,
@@ -10,7 +10,6 @@ use jsonrpsee::types::error::INVALID_REQUEST_CODE;
 use jsonrpsee::types::{ErrorCode, ErrorObject};
 use jsonrpsee::RpcModule;
 use lru::LruCache;
-use op_alloy_rpc_jsonrpsee::traits::{MinerApiExtClient, MinerApiExtServer};
 use op_alloy_rpc_types_engine::OpExecutionPayloadEnvelopeV3;
 use opentelemetry::global::{self, BoxedSpan, BoxedTracer};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -20,7 +19,7 @@ use reth_payload_primitives::PayloadBuilderAttributes;
 use std::num::NonZero;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::proc_macros::rpc;
@@ -525,7 +524,7 @@ mod tests {
 
             let jwt_secret = JwtSecret::random();
             let l2_client =
-                ExecutionClient::new(host, L2_PORT, host, L2_PORT, jwt_secret.clone(), 2000)
+                ExecutionClient::new(host, L2_PORT, host, L2_PORT, jwt_secret, 2000)
                     .unwrap();
 
             let builder_client =
