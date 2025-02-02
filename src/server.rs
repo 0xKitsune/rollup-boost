@@ -153,25 +153,27 @@ where
     fn try_into(self) -> Result<RpcModule<RollupBoostServer<C, A>>, Self::Error> {
         let mut module: RpcModule<RollupBoostServer<C, A>> = RpcModule::new(self.clone());
         module.merge(EngineApiServer::into_rpc(self.clone()))?;
-        module.merge(EthApiServer::into_rpc(self.clone()))?;
-        module.merge(MinerApiServer::into_rpc(self.clone()))?;
-        module.merge(MinerApiExtServer::into_rpc(self.clone()))?;
 
+        // Register all the methods that should be forwarded to the builder and l2 client
         for method in FORWARD_REQUESTS.iter() {
             module.register_async_method(method, move |params, ctx, _ext| async move {
-                let l2_params: (serde_json::Value,) = params.parse().expect("TODO: handle error");
+                let builder_params: (serde_json::Value,) =
+                    params.parse().map_err(|_| ErrorCode::ParseError)?;
+                let l2_params = builder_params.clone();
 
                 let builder_client = ctx.builder_client.clone();
-                let builder_params = l2_params.clone();
-
+                let builder_socket = ctx.builder_client.http_socket.clone();
                 tokio::spawn(async move {
                     builder_client
                         .client
                         .request::<serde_json::Value, _>(method, builder_params)
                         .await
                         .map_err(|e| {
-
-                            // TODO: error
+                            error!(
+                                message = format!("error calling {} for builder", method),
+                                "url" = ?builder_socket,
+                                "error" = %e,
+                            );
                         })
                 });
 
@@ -183,7 +185,7 @@ where
                         ClientError::Call(err) => err,
                         other_error => {
                             error!(
-                                message = "error calling send_raw_transaction for l2 client",
+                                message = format!("error calling {} for l2 client", method),
                                 "url" = ?ctx.l2_client.http_socket,
                                 "error" = %other_error,
                             );
@@ -1107,6 +1109,8 @@ mod tests {
             };
 
             requests.lock().unwrap().push(request_body.clone());
+
+            dbg!("req body", &request_body);
 
             let method = request_body["method"].as_str().unwrap_or_default();
 
