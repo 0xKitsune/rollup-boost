@@ -127,7 +127,7 @@ where
     }
 }
 
-impl<C, A> TryInto<RpcModule<()>> for RollupBoostServer<C, A>
+impl<C, A> TryInto<RpcModule<RollupBoostServer<C, A>>> for RollupBoostServer<C, A>
 where
     C: EngineApiClient
         + EthApiClient
@@ -150,22 +150,24 @@ where
 {
     type Error = RegisterMethodError;
 
-    fn try_into(self) -> Result<RpcModule<()>, Self::Error> {
-        let mut module: RpcModule<()> = RpcModule::new(());
+    fn try_into(self) -> Result<RpcModule<RollupBoostServer<C, A>>, Self::Error> {
+        let mut module: RpcModule<RollupBoostServer<C, A>> = RpcModule::new(self.clone());
         module.merge(EngineApiServer::into_rpc(self.clone()))?;
         module.merge(EthApiServer::into_rpc(self.clone()))?;
         module.merge(MinerApiServer::into_rpc(self.clone()))?;
         module.merge(MinerApiExtServer::into_rpc(self.clone()))?;
 
-        let builder_client = self.builder_client.clone();
-        let l2_client = self.l2_client.clone();
-
         for method in FORWARD_REQUESTS.iter() {
-            module.register_async_method(method, |params, ctx, ext| async move {
+            module.register_async_method(method, move |params, ctx, _ext| async move {
+                let l2_params: (serde_json::Value,) = params.parse().expect("TODO: handle error");
+
+                let builder_client = ctx.builder_client.clone();
+                let builder_params = l2_params.clone();
+
                 tokio::spawn(async move {
                     builder_client
                         .client
-                        .request(method, params)
+                        .request::<serde_json::Value, _>(method, builder_params)
                         .await
                         .map_err(|e| {
 
@@ -173,16 +175,16 @@ where
                         })
                 });
 
-                self.l2_client
+                ctx.l2_client
                     .client
-                    .request(method, params)
+                    .request::<serde_json::Value, _>(method, l2_params)
                     .await
                     .map_err(|e| match e {
-                        ClientError::Call(err) => err, // Already an ErrorObjectOwned, so just return it
+                        ClientError::Call(err) => err,
                         other_error => {
                             error!(
                                 message = "error calling send_raw_transaction for l2 client",
-                                "url" = ?self.l2_client.http_socket,
+                                "url" = ?ctx.l2_client.http_socket,
                                 "error" = %other_error,
                             );
                             ErrorCode::InternalError.into()
@@ -809,7 +811,7 @@ mod tests {
             let rollup_boost_client =
                 RollupBoostServer::new(l2_client, builder_client, boost_sync, None);
 
-            let module: RpcModule<()> = rollup_boost_client.try_into().unwrap();
+            let module: RpcModule<_> = rollup_boost_client.try_into().unwrap();
 
             let proxy_server = ServerBuilder::default()
                 .build("0.0.0.0:8556".parse::<SocketAddr>().unwrap())

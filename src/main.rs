@@ -170,7 +170,7 @@ async fn main() -> eyre::Result<()> {
 
     let rollup_boost = RollupBoostServer::new(l2_client, builder_client, args.boost_sync, metrics);
 
-    let module: RpcModule<()> = rollup_boost.try_into()?;
+    let module: RpcModule<_> = rollup_boost.try_into()?;
 
     // server setup
     info!("Starting server on :{}", args.rpc_port);
