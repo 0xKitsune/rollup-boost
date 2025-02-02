@@ -130,13 +130,21 @@ where
 }
 
 #[derive(Debug, Clone)]
-/// Newtype wrapper for serde_json::Value to implement ToRpcParams
-pub struct JsonParams<'a>(Params<'a>);
+/// Newtype wrapper for Params to implement ToRpcParams
+struct JsonParams<'a>(Params<'a>);
 
 impl<'a> ToRpcParams for JsonParams<'a> {
-    fn to_rpc_params(self) -> Result<Option<Box<RawValue>>, serde_json::Error> {
-        let parsed_params: serde_json::Value = self.0.as_str().into();
-        serde_json::value::to_raw_value(&parsed_params).map(Some)
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        let json_str = self.0.as_str().unwrap_or("null");
+        let mut value = serde_json::from_str::<serde_json::Value>(json_str)?;
+        if let serde_json::Value::Array(arr) = &value {
+            if arr.len() == 1 {
+                if let serde_json::Value::Array(inner) = &arr[0] {
+                    value = serde_json::Value::Array(inner.clone());
+                }
+            }
+        }
+        serde_json::value::to_raw_value(&value).map(Some)
     }
 }
 
