@@ -26,14 +26,21 @@ pub struct ProxyLayer {
     l2_uri: Uri,
     l2_auth: JwtSecret,
     builder_uri: Uri,
+    builder_auth: Option<JwtSecret>,
 }
 
 impl ProxyLayer {
-    pub fn new(l2_uri: Uri, l2_auth: JwtSecret, builder_uri: Uri) -> Self {
+    pub fn new(
+        l2_uri: Uri,
+        l2_auth: JwtSecret,
+        builder_uri: Uri,
+        builder_auth: Option<JwtSecret>,
+    ) -> Self {
         ProxyLayer {
             l2_uri,
-            builder_uri,
             l2_auth,
+            builder_uri,
+            builder_auth,
         }
     }
 }
@@ -48,6 +55,7 @@ impl<S> Layer<S> for ProxyLayer {
             l2_uri: self.l2_uri.clone(),
             l2_auth: self.l2_auth,
             builder_uri: self.builder_uri.clone(),
+            builder_auth: self.builder_auth.clone(),
         }
     }
 }
@@ -59,6 +67,7 @@ pub struct ProxyService<S> {
     l2_uri: Uri,
     l2_auth: JwtSecret,
     builder_uri: Uri,
+    builder_auth: Option<JwtSecret>,
 }
 
 impl<S> Service<HttpRequest<HttpBody>> for ProxyService<S>
@@ -85,6 +94,7 @@ where
         let client = self.client.clone();
         let mut inner = self.inner.clone();
         let builder_uri = self.builder_uri.clone();
+        let builder_auth = self.builder_auth.clone();
         let l2_uri = self.l2_uri.clone();
         let l2_auth = self.l2_auth;
 
@@ -118,7 +128,7 @@ where
                             builder_req,
                             &builder_method,
                             builder_uri,
-                            None,
+                            builder_auth,
                         )
                         .await;
                     });
@@ -316,7 +326,7 @@ mod tests {
         .unwrap();
 
         // TODO: update uri
-        let proxy_layer = ProxyLayer::new(l2_auth_uri, jwt, Uri::default());
+        let proxy_layer = ProxyLayer::new(l2_auth_uri, jwt, Uri::default(), None);
 
         // Create a layered server
         let server = ServerBuilder::default()
