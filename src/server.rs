@@ -129,24 +129,8 @@ where
 
 impl<C, A> TryInto<RpcModule<RollupBoostServer<C, A>>> for RollupBoostServer<C, A>
 where
-    C: EngineApiClient
-        + EthApiClient
-        + MinerApiClient
-        + MinerApiExtClient
-        + ClientT
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    A: EngineApiClient
-        + EthApiClient
-        + MinerApiClient
-        + MinerApiExtClient
-        + ClientT
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    C: EngineApiClient + ClientT + Clone + Send + Sync + 'static,
+    A: EngineApiClient + ClientT + Clone + Send + Sync + 'static,
 {
     type Error = RegisterMethodError;
 
@@ -157,6 +141,8 @@ where
         // Register all the methods that should be forwarded to the builder and l2 client
         for method in FORWARD_REQUESTS.iter() {
             module.register_async_method(method, move |params, ctx, _ext| async move {
+                info!("params: {:?}", &params);
+
                 let builder_params: Vec<serde_json::Value> =
                     params.parse().map_err(|_| ErrorCode::ParseError)?;
                 let l2_params = builder_params.clone();
@@ -200,213 +186,6 @@ where
         }
 
         Ok(module)
-    }
-}
-
-#[rpc(server, client, namespace = "eth")]
-pub trait EthApi {
-    #[method(name = "sendRawTransaction")]
-    async fn send_raw_transaction(&self, bytes: Bytes) -> RpcResult<B256>;
-}
-
-#[async_trait]
-impl<C, A> EthApiServer for RollupBoostServer<C, A>
-where
-    C: ClientT + Clone + Send + Sync + 'static,
-    A: ClientT + Clone + Send + Sync + 'static,
-{
-    async fn send_raw_transaction(&self, bytes: Bytes) -> RpcResult<B256> {
-        debug!(
-            message = "received send_raw_transaction",
-            "bytes_len" = bytes.len()
-        );
-
-        if let Some(metrics) = &self.metrics {
-            metrics.send_raw_tx_count.increment(1);
-        }
-
-        let builder_client = self.builder_client.clone();
-        let tx_bytes = bytes.clone();
-        tokio::spawn(async move {
-            builder_client.client.send_raw_transaction(tx_bytes).await.map_err(|e| {
-                error!(message = "error calling send_raw_transaction for builder", "url" = ?builder_client.http_socket, "error" = %e);
-            })
-        });
-
-        self.l2_client
-            .client
-            .send_raw_transaction(bytes)
-            .await
-            .map_err(|e| match e {
-                ClientError::Call(err) => err, // Already an ErrorObjectOwned, so just return it
-                other_error => {
-                    error!(
-                        message = "error calling send_raw_transaction for l2 client",
-                        "url" = ?self.l2_client.http_socket,
-                        "error" = %other_error,
-                    );
-                    ErrorCode::InternalError.into()
-                }
-            })
-    }
-}
-
-/*TODO: Remove this in favor of the `MinerApi` from Reth once the
-       trait methods are updated to be async
-*/
-/// Miner namespace rpc interface that can control miner/builder settings
-#[rpc(server, client, namespace = "miner")]
-pub trait MinerApi {
-    /// Sets the extra data string that is included when this miner mines a block.
-    ///
-    /// Returns an error if the extra data is too long.
-    #[method(name = "setExtra")]
-    async fn set_extra(&self, record: Bytes) -> RpcResult<bool>;
-
-    /// Sets the minimum accepted gas price for the miner.
-    #[method(name = "setGasPrice")]
-    async fn set_gas_price(&self, gas_price: U128) -> RpcResult<bool>;
-
-    /// Sets the gaslimit to target towards during mining.
-    #[method(name = "setGasLimit")]
-    async fn set_gas_limit(&self, gas_price: U128) -> RpcResult<bool>;
-}
-
-#[async_trait]
-impl<C, A> MinerApiServer for RollupBoostServer<C, A>
-where
-    C: ClientT + Clone + Send + Sync + 'static,
-    A: ClientT + Clone + Send + Sync + 'static,
-{
-    async fn set_extra(&self, record: Bytes) -> RpcResult<bool> {
-        debug!(
-            message = "received miner_setExtra",
-            "record_len" = record.len()
-        );
-
-        let builder_client = self.builder_client.clone();
-        let rec = record.clone();
-        tokio::spawn(async move {
-            builder_client.client.set_extra(rec).await.map_err(|e| {
-                error!(message = "error calling miner_setExtra for builder", "url" = ?builder_client.http_socket, "error" = %e);
-            })
-        });
-
-        match self.l2_client.client.set_extra(record).await {
-            Ok(result) => Ok(result),
-            Err(e) => match e {
-                ClientError::Call(err) => Err(err),
-                other_error => {
-                    error!(
-                        message = "error calling miner_setExtra for l2 client",
-                        "url" = ?self.l2_client.http_socket,
-                        "error" = %other_error,
-                    );
-                    Err(ErrorCode::InternalError.into())
-                }
-            },
-        }
-    }
-
-    async fn set_gas_limit(&self, gas_price: U128) -> RpcResult<bool> {
-        debug!(
-            message = "received miner_setGasLimit",
-            "gas_price" = ?gas_price
-        );
-
-        let builder_client = self.builder_client.clone();
-        tokio::spawn(async move {
-            builder_client.client.set_gas_limit(gas_price).await.map_err(|e| {
-                error!(message = "error calling miner_setGasLimit for builder", "url" = ?builder_client.http_socket, "error" = %e);
-            })
-        });
-
-        match self.l2_client.client.set_gas_limit(gas_price).await {
-            Ok(result) => Ok(result),
-            Err(e) => match e {
-                ClientError::Call(err) => Err(err),
-                other_error => {
-                    error!(
-                        message = "error calling miner_setGasLimit for l2 client",
-                        "url" = ?self.l2_client.http_socket,
-                        "error" = %other_error,
-                    );
-                    Err(ErrorCode::InternalError.into())
-                }
-            },
-        }
-    }
-
-    async fn set_gas_price(&self, gas_price: U128) -> RpcResult<bool> {
-        debug!(message = "received miner_setGasPrice", ?gas_price);
-
-        let builder_client = self.builder_client.clone();
-        tokio::spawn(async move {
-            builder_client.client.set_gas_price(gas_price).await.map_err(|e| {
-                error!(message = "error calling miner_setGasPrice for builder", "url" = ?builder_client.http_socket, "error" = %e);
-            })
-        });
-
-        match self.l2_client.client.set_gas_price(gas_price).await {
-            Ok(result) => Ok(result),
-            Err(e) => match e {
-                ClientError::Call(err) => Err(err),
-                other_error => {
-                    error!(
-                        message = "error calling miner_setGasPrice for l2 client",
-                        "url" = ?self.l2_client.http_socket,
-                        "error" = %other_error,
-                    );
-                    Err(ErrorCode::InternalError.into())
-                }
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl<C, A> MinerApiExtServer for RollupBoostServer<C, A>
-where
-    C: ClientT + Clone + Send + Sync + 'static,
-    A: ClientT + Clone + Send + Sync + 'static,
-{
-    async fn set_max_da_size(&self, max_tx_size: U64, max_block_size: U64) -> RpcResult<bool> {
-        debug!(
-            target: "server::set_max_da_size",
-            message = "received miner_setMaxDASize",
-            ?max_tx_size,
-            ?max_block_size
-        );
-
-        let builder_client = self.builder_client.clone();
-        tokio::spawn(async move {
-            builder_client.client.set_max_da_size(max_tx_size, max_block_size).await.map_err(|e| {
-                error!(target: "server::set_max_da_size", message = "error calling miner_setMaxDASize for builder", "url" = ?builder_client.http_socket, "error" = %e);
-            })
-        });
-
-        match self
-            .l2_client
-            .client
-            .set_max_da_size(max_tx_size, max_block_size)
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(e) => match e {
-                ClientError::Call(err) => {
-                    error!(target: "server::set_max_da_size", message = "error forwarding miner_setMaxDASize to l2 client", ?err);
-                    Err(err)
-                }
-                other_error => {
-                    error!(
-                        message = "error calling miner_setMaxDASize for l2 client",
-                        "url" = ?self.l2_client.http_socket,
-                        "error" = %other_error,
-                    );
-                    Err(ErrorCode::InternalError.into())
-                }
-            },
-        }
     }
 }
 
