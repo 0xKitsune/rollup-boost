@@ -3,7 +3,7 @@ use http::Uri;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use jsonrpsee::core::{http_helpers, BoxError, RpcResult};
+use jsonrpsee::core::{http_helpers, BoxError};
 use jsonrpsee::http_client::{HttpBody, HttpRequest, HttpResponse};
 use reth_rpc_layer::{secret_to_bearer_header, JwtSecret};
 use std::task::{Context, Poll};
@@ -98,37 +98,34 @@ where
 
             debug!(message = "received json rpc request for", ?method);
 
-            let body = HttpBody::from(body_bytes.clone());
-
             if MULTIPLEX_METHODS.iter().any(|&m| method.starts_with(m)) {
                 if FORWARD_REQUEST.iter().any(|&m| method.starts_with(m)) {
                     let builder_client = client.clone();
-                    let builder_req = HttpRequest::from_parts(parts.clone(), body);
+                    let builder_req =
+                        HttpRequest::from_parts(parts.clone(), HttpBody::from(body_bytes.clone()));
+                    let builder_method = method.clone();
+
                     tokio::spawn(async move {
                         let _ = forward_request(
                             builder_client,
                             builder_req,
-                            &method,
+                            &builder_method,
                             builder_uri,
                             None,
                         )
                         .await;
                     });
 
-                    // let l2_req = HttpRequest::from_parts(parts, new_body);
-                    // info!(target: "proxy::call", message = "proxying request to rollup-boost server", ?method);
-                    // let res = inner.call(req).await.map_err(|e| e.into())?;
-                    // Ok(res)
-
-                    todo!()
-                } else {
-                    let req = HttpRequest::from_parts(parts, body);
+                    let l2_req = HttpRequest::from_parts(parts, HttpBody::from(body_bytes));
                     info!(target: "proxy::call", message = "proxying request to rollup-boost server", ?method);
-                    let res = inner.call(req).await.map_err(|e| e.into())?;
-                    Ok(res)
+                    forward_request(client, l2_req, &method, l2_uri, None).await
+                } else {
+                    let req = HttpRequest::from_parts(parts, HttpBody::from(body_bytes));
+                    info!(target: "proxy::call", message = "proxying request to rollup-boost server", ?method);
+                    inner.call(req).await.map_err(|e| e.into())
                 }
             } else {
-                let req = HttpRequest::from_parts(parts, body);
+                let req = HttpRequest::from_parts(parts, HttpBody::from(body_bytes));
                 forward_request(client, req, &method, l2_uri, Some(l2_auth)).await
             }
         };
