@@ -3,25 +3,31 @@ use http::Uri;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use jsonrpsee::core::{http_helpers, BoxError};
+use jsonrpsee::core::{http_helpers, BoxError, RpcResult};
 use jsonrpsee::http_client::{HttpBody, HttpRequest, HttpResponse};
 use reth_rpc_layer::{secret_to_bearer_header, JwtSecret};
 use std::task::{Context, Poll};
 use std::{future::Future, pin::Pin};
 use tower::{Layer, Service};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 const MULTIPLEX_METHODS: [&str; 3] = ["engine_", "eth_sendRawTransaction", "miner_"];
+const FORWARD_REQUEST: [&str; 3] = ["engine_", "eth_sendRawTransaction", "miner_"];
 
 #[derive(Debug, Clone)]
 pub struct ProxyLayer {
-    target_url: Uri,
-    secret: JwtSecret,
+    l2_uri: Uri,
+    l2_auth: JwtSecret,
+    builder_uri: Uri,
 }
 
 impl ProxyLayer {
-    pub fn new(target_url: Uri, secret: JwtSecret) -> Self {
-        ProxyLayer { target_url, secret }
+    pub fn new(l2_uri: Uri, l2_auth: JwtSecret, builder_uri: Uri) -> Self {
+        ProxyLayer {
+            l2_uri,
+            builder_uri,
+            l2_auth,
+        }
     }
 }
 
@@ -32,8 +38,9 @@ impl<S> Layer<S> for ProxyLayer {
         ProxyService {
             inner,
             client: Client::builder(TokioExecutor::new()).build_http(),
-            target_url: self.target_url.clone(),
-            secret: self.secret,
+            l2_uri: self.l2_uri.clone(),
+            l2_auth: self.l2_auth,
+            builder_uri: self.builder_uri.clone(),
         }
     }
 }
@@ -42,8 +49,9 @@ impl<S> Layer<S> for ProxyLayer {
 pub struct ProxyService<S> {
     inner: S,
     client: Client<HttpConnector, HttpBody>,
-    target_url: Uri,
-    secret: JwtSecret,
+    l2_uri: Uri,
+    l2_auth: JwtSecret,
+    builder_uri: Uri,
 }
 
 impl<S> Service<HttpRequest<HttpBody>> for ProxyService<S>
@@ -69,8 +77,9 @@ where
 
         let client = self.client.clone();
         let mut inner = self.inner.clone();
-        let target_url = self.target_url.clone();
-        let secret = self.secret;
+        let builder_uri = self.builder_uri.clone();
+        let l2_uri = self.l2_uri.clone();
+        let l2_auth = self.l2_auth;
 
         #[derive(serde::Deserialize, Debug)]
         struct RpcRequest<'a> {
@@ -80,48 +89,89 @@ where
 
         let fut = async move {
             let (parts, body) = req.into_parts();
+            let (body_bytes, _) = http_helpers::read_body(&parts.headers, body, u32::MAX).await?;
 
-            let (body, _is_single) =
-                http_helpers::read_body(&parts.headers, body, u32::MAX).await?;
             // Deserialize the bytes to find the method
-            let rpc_request: RpcRequest = serde_json::from_slice(&body)?;
+            let method = serde_json::from_slice::<RpcRequest>(&body_bytes)?
+                .method
+                .to_owned();
 
-            // Create a new body from the bytes
-            let new_body = HttpBody::from(body.clone());
+            debug!(message = "received json rpc request for", ?method);
 
-            // Reconstruct the request
-            let mut req = HttpRequest::from_parts(parts, new_body);
+            let body = HttpBody::from(body_bytes.clone());
 
-            debug!(
-                message = "received json rpc request for",
-                method = rpc_request.method
-            );
-            if MULTIPLEX_METHODS
-                .iter()
-                .any(|&m| rpc_request.method.starts_with(m))
-            {
-                info!(target: "proxy::call", message = "proxying request to rollup-boost server", "method" = ?rpc_request.method);
+            if MULTIPLEX_METHODS.iter().any(|&m| method.starts_with(m)) {
+                if FORWARD_REQUEST.iter().any(|&m| method.starts_with(m)) {
+                    let builder_client = client.clone();
+                    let builder_req = HttpRequest::from_parts(parts.clone(), body);
+                    tokio::spawn(async move {
+                        let _ = forward_request(
+                            builder_client,
+                            builder_req,
+                            &method,
+                            builder_uri,
+                            None,
+                        )
+                        .await;
+                    });
 
-                // let rpc server handle engine rpc requests
-                let res = inner.call(req).await.map_err(|e| e.into())?;
-                Ok(res)
+                    // let l2_req = HttpRequest::from_parts(parts, new_body);
+                    // info!(target: "proxy::call", message = "proxying request to rollup-boost server", ?method);
+                    // let res = inner.call(req).await.map_err(|e| e.into())?;
+                    // Ok(res)
+
+                    todo!()
+                } else {
+                    let req = HttpRequest::from_parts(parts, body);
+                    info!(target: "proxy::call", message = "proxying request to rollup-boost server", ?method);
+                    let res = inner.call(req).await.map_err(|e| e.into())?;
+                    Ok(res)
+                }
             } else {
-                info!(target: "proxy::call", message = "forwarding request to l2 client", "method" = ?rpc_request.method);
-                // Modify the URI
-                *req.uri_mut() = target_url.clone();
-                // Insert JWT Authorization headers
-                req.headers_mut()
-                    .insert(AUTHORIZATION, secret_to_bearer_header(&secret));
-
-                // Forward the request
-                let res = client
-                    .request(req)
-                    .await
-                    .map(|res| res.map(HttpBody::new))?;
-                Ok(res)
+                let req = HttpRequest::from_parts(parts, body);
+                forward_request(client, req, &method, l2_uri, Some(l2_auth)).await
             }
         };
         Box::pin(fut)
+    }
+}
+
+async fn forward_request(
+    client: Client<HttpConnector, HttpBody>,
+    mut req: http::Request<HttpBody>,
+    method: &str,
+    uri: Uri,
+    auth: Option<JwtSecret>,
+) -> Result<http::Response<HttpBody>, BoxError> {
+    *req.uri_mut() = uri.clone();
+    if let Some(auth) = auth {
+        req.headers_mut()
+            .insert(AUTHORIZATION, secret_to_bearer_header(&auth));
+    }
+
+    debug!(
+        target: "proxy::forward_request",
+        url = ?uri,
+        ?method,
+        ?req,
+    );
+
+    match client.request(req).await {
+        Ok(resp) => {
+            let resp = resp.map(HttpBody::new);
+
+            Ok(resp)
+        }
+        Err(e) => {
+            error!(
+                target: "proxy::call",
+                message = "error forwarding request",
+                url = ?uri,
+                method = %method,
+                error = %e,
+            );
+            Err(e.into())
+        }
     }
 }
 
@@ -260,7 +310,9 @@ mod tests {
         )
         .parse::<Uri>()
         .unwrap();
-        let proxy_layer = ProxyLayer::new(l2_auth_uri, jwt);
+
+        // TODO: update uri
+        let proxy_layer = ProxyLayer::new(l2_auth_uri, jwt, Uri::default());
 
         // Create a layered server
         let server = ServerBuilder::default()

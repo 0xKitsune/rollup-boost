@@ -180,7 +180,14 @@ async fn main() -> eyre::Result<()> {
     )
     .parse::<Uri>()?;
 
-    let service_builder = tower::ServiceBuilder::new().layer(ProxyLayer::new(auth_rpc_uri, l2_jwt));
+    let builder_rpc_uri = format!(
+        "http://{}:{}",
+        builder_args.builder_http_addr, builder_args.builder_http_port
+    )
+    .parse::<Uri>()?;
+
+    let service_builder =
+        tower::ServiceBuilder::new().layer(ProxyLayer::new(auth_rpc_uri, l2_jwt, builder_rpc_uri));
     let server = Server::builder()
         .set_http_middleware(service_builder)
         .build(format!("{}:{}", args.rpc_host, args.rpc_port).parse::<SocketAddr>()?)
