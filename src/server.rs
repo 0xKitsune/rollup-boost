@@ -8,7 +8,7 @@ use alloy_rpc_types_engine::{
 use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::core::{async_trait, ClientError, RegisterMethodError, RpcResult};
 use jsonrpsee::types::error::INVALID_REQUEST_CODE;
-use jsonrpsee::types::{ErrorCode, ErrorObject};
+use jsonrpsee::types::{ErrorCode, ErrorObject, Params};
 use jsonrpsee::RpcModule;
 use lru::LruCache;
 use op_alloy_rpc_jsonrpsee::traits::{MinerApiExtClient, MinerApiExtServer};
@@ -131,11 +131,12 @@ where
 
 #[derive(Debug, Clone)]
 /// Newtype wrapper for serde_json::Value to implement ToRpcParams
-pub struct JsonValue(serde_json::Value);
+pub struct JsonParams<'a>(Params<'a>);
 
-impl ToRpcParams for JsonValue {
+impl<'a> ToRpcParams for JsonParams<'a> {
     fn to_rpc_params(self) -> Result<Option<Box<RawValue>>, serde_json::Error> {
-        serde_json::value::to_raw_value(&self.0).map(Some)
+        let parsed_params: serde_json::Value = self.0.as_str().into();
+        serde_json::value::to_raw_value(&parsed_params).map(Some)
     }
 }
 
@@ -153,12 +154,11 @@ where
         // Register all the methods that should be forwarded to the builder and l2 client
         for method in FORWARD_REQUESTS.iter() {
             module.register_async_method(method, move |params, ctx, _ext| async move {
-                dbg!(&params);
-
-                let builder_params: JsonValue =
-                    JsonValue(params.parse().map_err(|_| ErrorCode::ParseError)?);
-
+                let builder_params = JsonParams(params);
                 let l2_params = builder_params.clone();
+
+                let val = l2_params.clone().to_rpc_params();
+                dbg!(&val);
 
                 let builder_client = ctx.builder_client.clone();
                 let builder_socket = ctx.builder_client.http_socket.clone();
@@ -1185,11 +1185,7 @@ mod tests {
             .build("http://127.0.0.1:8556")
             .unwrap();
 
-        let response: serde_json::Value = client.request("miner_setMaxDASize", (params,)).await?;
-
-        // rollup_boost
-        //     .set_max_da_size(max_tx_size, max_block_size)
-        //     .await?;
+        let _response: serde_json::Value = client.request("miner_setMaxDASize", (params,)).await?;
 
         let expected_method = "miner_setMaxDASize";
         let expected_tx_size = json!(max_tx_size);
@@ -1198,6 +1194,9 @@ mod tests {
         // Assert the builder received the correct payload
         let builder_requests = builder.requests.lock().unwrap();
         let builder_req = builder_requests.first().unwrap();
+
+        dbg!(&builder_req);
+
         assert_eq!(builder_requests.len(), 1);
         assert_eq!(builder_req["method"], expected_method);
         assert_eq!(builder_req["params"][0], expected_tx_size);
